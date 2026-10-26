@@ -37,6 +37,8 @@ import java.util.concurrent.TimeUnit
 class NetworkHelper(
     context: Context,
 ) {
+    private val logger = KotlinLogging.logger {}
+
     //    private val preferences: PreferencesHelper by injectLazy()
 
 //    private val cacheDir = File(context.cacheDir, "network_cache")
