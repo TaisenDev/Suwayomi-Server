@@ -388,11 +388,11 @@ object BridgeMediaToken {
             imageUrl = bridgeSourceCall { source.getImageUrl(page) }
             page.imageUrl = imageUrl
         }
-        if (!publicHttpUrl(imageUrl ?: return null)) return null
+        if (!publicHttpUrl(imageUrl)) return null
         val response = bridgeSourceCall { source.getImage(page) }
         response.use {
             if (!publicHttpUrl(it.request.url.toString())) return null
-            val body = it.body ?: return null
+            val body = it.body
             if (body.contentLength() > MAX_IMAGE_BYTES) return null
             val bytes =
                 body.byteStream().use { stream ->
