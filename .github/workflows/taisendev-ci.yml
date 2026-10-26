@@ -1,8 +1,6 @@
 name: Custom server CI
 
 on:
-  push:
-    branches: [master]
   pull_request:
     branches: [master]
   workflow_dispatch:
@@ -25,4 +23,4 @@ jobs:
           distribution: zulu
       - uses: gradle/actions/setup-gradle@v5
       - name: Check style, tests, and full server JAR
-        run: ./gradlew ktlintCheck :server:test :server:downloadWebUI :server:shadowJar --stacktrace
+        run: ./gradlew -Dorg.gradle.jvmargs="-Xmx5g -XX:MaxMetaspaceSize=1g" -Pkotlin.compiler.execution.strategy=in-process --max-workers=2 ktlintCheck :server:test :server:downloadWebUI :server:shadowJar --stacktrace
