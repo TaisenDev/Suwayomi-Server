@@ -20,12 +20,17 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import okhttp3.Cache
+import okhttp3.Dns
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
+import okhttp3.dnsoverhttps.DnsOverHttps
 import okhttp3.logging.HttpLoggingInterceptor
 import suwayomi.tachidesk.manga.impl.util.source.GetSource
 import java.net.CookieHandler
 import java.net.CookieManager
 import java.net.CookiePolicy
+import java.net.InetAddress
+import java.net.UnknownHostException
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 
@@ -66,11 +71,38 @@ class NetworkHelper(
             }.launchIn(GlobalScope)
     }
 
+    private val cloudflareDohEnabled =
+        !System.getenv("SUWAYOMI_CLOUDFLARE_DOH").equals("false", ignoreCase = true)
+
+    private val cloudflareDns: Dns by lazy {
+        val bootstrapClient = OkHttpClient.Builder().build()
+        val doh =
+            DnsOverHttps.Builder()
+                .client(bootstrapClient)
+                .url("https://cloudflare-dns.com/dns-query".toHttpUrl())
+                .bootstrapDnsHosts(
+                    InetAddress.getByName("1.1.1.1"),
+                    InetAddress.getByName("1.0.0.1"),
+                ).build()
+
+        object : Dns {
+            override fun lookup(hostname: String): List<InetAddress> =
+                try {
+                    doh.lookup(hostname)
+                } catch (error: UnknownHostException) {
+                    logger.warn(error) { "Cloudflare DoH failed for $hostname; using system DNS" }
+                    Dns.SYSTEM.lookup(hostname)
+                }
+        }
+    }
     private val baseClientBuilder: OkHttpClient.Builder
         get() {
             val builder =
                 OkHttpClient
                     .Builder()
+                    .also {
+                        if (cloudflareDohEnabled) it.dns(cloudflareDns)
+                    }
                     .cookieJar(PersistentCookieJar(cookieStore))
                     .connectTimeout(30, TimeUnit.SECONDS)
                     .readTimeout(30, TimeUnit.SECONDS)

@@ -1,0 +1,28 @@
+name: Custom server CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: custom-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          java-version: 25
+          distribution: zulu
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Check style, tests, and full server JAR
+        run: ./gradlew ktlintCheck :server:test :server:downloadWebUI :server:shadowJar --stacktrace

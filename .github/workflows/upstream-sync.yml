@@ -1,0 +1,65 @@
+name: Propose upstream updates
+
+on:
+  schedule:
+    - cron: '17 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: master
+          fetch-depth: 0
+      - name: Configure TaisenDev commit identity
+        run: |
+          git config user.name "TaisenDev"
+          git config user.email "77544506+TaisenDev@users.noreply.github.com"
+      - name: Merge upstream master into review branch
+        id: merge
+        run: |
+          git remote add upstream https://github.com/Suwayomi/Suwayomi-Server.git
+          git fetch upstream master
+          git checkout -B automation/upstream-sync
+          if git merge-base --is-ancestor upstream/master HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git merge --no-edit upstream/master
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-java@v6
+        if: steps.merge.outputs.changed == 'true'
+        with:
+          java-version: 25
+          distribution: zulu
+      - uses: gradle/actions/setup-gradle@v5
+        if: steps.merge.outputs.changed == 'true'
+      - name: Test the merged upstream changes before proposing them
+        if: steps.merge.outputs.changed == 'true'
+        run: ./gradlew ktlintCheck :server:test :server:downloadWebUI :server:shadowJar --stacktrace
+      - name: Push tested review branch
+        if: steps.merge.outputs.changed == 'true'
+        run: git push --force origin automation/upstream-sync
+      - name: Open or update review PR
+        if: steps.merge.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          existing="$(gh pr list --base master --head automation/upstream-sync --json number --jq '.[0].number // empty')"
+          if [ -z "$existing" ]; then
+            gh pr create \
+              --base master \
+              --head automation/upstream-sync \
+              --title "Sync upstream Suwayomi changes" \
+              --body "This PR merges the latest upstream master into TaisenDev's fork. The merged code was built and tested by the sync workflow before publishing this PR. Review it before merging. The workflow never auto-merges or deploys."
+          fi
