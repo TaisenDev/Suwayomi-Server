@@ -36,7 +36,7 @@ private suspend fun <T> bridgeSourceCall(block: suspend () -> T): T =
 class BridgeMutation {
     enum class ListingType { SEARCH, POPULAR, LATEST }
 
-    data class FetchSourceInput(
+    data class BridgeFetchSourceInput(
         val source: Long,
         val type: ListingType,
         val page: Int,
@@ -44,7 +44,7 @@ class BridgeMutation {
         val filters: List<FilterChange>? = null,
     )
 
-    data class MangaInput(
+    data class BridgeMangaInput(
         val source: Long,
         val url: String,
         val title: String? = null,
@@ -56,7 +56,7 @@ class BridgeMutation {
         val fetchChapters: Boolean = true,
     )
 
-    data class PagesInput(
+    data class BridgePagesInput(
         val source: Long,
         val mangaUrl: String,
         val chapterUrl: String,
@@ -65,7 +65,7 @@ class BridgeMutation {
         val scanlator: String? = null,
     )
 
-    data class BridgeManga(
+    data class BridgeMangaResult(
         val id: Int,
         val sourceId: String,
         val url: String,
@@ -79,7 +79,7 @@ class BridgeMutation {
         val status: String = "UNKNOWN",
     )
 
-    data class BridgeChapter(
+    data class BridgeChapterResult(
         val id: Int,
         val url: String,
         val realUrl: String,
@@ -89,30 +89,30 @@ class BridgeMutation {
         val scanlator: String? = null,
     )
 
-    data class FetchSourcePayload(
-        val mangas: List<BridgeManga>,
+    data class BridgeFetchSourcePayload(
+        val mangas: List<BridgeMangaResult>,
         val hasNextPage: Boolean,
     )
 
-    data class FetchMangaPayload(
-        val manga: BridgeManga,
-        val chapters: List<BridgeChapter>,
+    data class BridgeFetchMangaPayload(
+        val manga: BridgeMangaResult,
+        val chapters: List<BridgeChapterResult>,
     )
 
-    data class ResolveUrlPayload(
+    data class BridgeResolveUrlPayload(
         val status: String,
-        val manga: BridgeManga? = null,
+        val manga: BridgeMangaResult? = null,
         val message: String? = null,
     )
 
-    data class FetchPagesPayload(
+    data class BridgeFetchPagesPayload(
         val pages: List<String>,
     )
 
     @RequireAuth
     fun bridgeFetchSourceManga(
         @GraphQLIgnore userId: Int,
-        input: FetchSourceInput,
+        input: BridgeFetchSourceInput,
     ) = future {
         require(input.page in 1..500) { "Page is outside the supported range" }
         require((input.query?.length ?: 0) <= 300) { "Search query is too long" }
@@ -136,13 +136,13 @@ class BridgeMutation {
                 }
             }
         require(result.mangas.size <= MAX_MANGAS_PER_PAGE) { "Source returned too many results" }
-        FetchSourcePayload(result.mangas.map { manga -> bridgeManga(input.source, source, manga) }, result.hasNextPage)
+        BridgeFetchSourcePayload(result.mangas.map { manga -> bridgeManga(input.source, source, manga) }, result.hasNextPage)
     }
 
     @RequireAuth
     fun bridgeFetchMangaAndChapters(
         @GraphQLIgnore userId: Int,
-        input: MangaInput,
+        input: BridgeMangaInput,
     ) = future {
         val http = httpSource(input.source)
         val manga = mangaInput(http, input)
@@ -151,7 +151,7 @@ class BridgeMutation {
                 http.getMangaUpdate(manga, emptyList(), fetchDetails = input.fetchManga, fetchChapters = input.fetchChapters)
             }
         require(update.chapters.size <= MAX_CHAPTERS_PER_MANGA) { "Source returned too many chapters" }
-        FetchMangaPayload(
+        BridgeFetchMangaPayload(
             manga = bridgeManga(input.source, http, update.manga),
             chapters = update.chapters.mapIndexed { index, chapter -> bridgeChapter(http, index, chapter) },
         )
@@ -160,7 +160,7 @@ class BridgeMutation {
     @RequireAuth
     fun bridgeFetchChapterPages(
         @GraphQLIgnore userId: Int,
-        input: PagesInput,
+        input: BridgePagesInput,
     ) = future {
         val http = httpSource(input.source)
         // Validate both URLs against the installed source before passing their relative paths to it.
@@ -174,7 +174,7 @@ class BridgeMutation {
             }
         val pages = bridgeSourceCall { http.getPageList(chapter) }
         require(pages.size <= MAX_PAGES_PER_CHAPTER) { "Source returned too many pages" }
-        FetchPagesPayload(
+        BridgeFetchPagesPayload(
             pages.mapIndexed { index, page ->
                 BridgeMediaToken.issue(input.source, absoluteUrl(http, page.url), page.imageUrl?.let { absoluteUrl(http, it) }, index)
             },
@@ -190,7 +190,7 @@ class BridgeMutation {
         require(url.length in 1..4096) { "URL is missing or too long" }
         val uri =
             MangaUrlResolver.parseHttpUri(url)
-                ?: return@future ResolveUrlPayload("INVALID_URL", message = "A valid public HTTP or HTTPS URL is required")
+                ?: return@future BridgeResolveUrlPayload("INVALID_URL", message = "A valid public HTTP or HTTPS URL is required")
         val matching =
             SourceRegistry
                 .getSourceList()
@@ -210,7 +210,7 @@ class BridgeMutation {
                         .trimEnd('/')
                         .length
                 }
-                ?: return@future ResolveUrlPayload("NO_SOURCE_FOR_URL", message = "Install the matching catalog extension first")
+                ?: return@future BridgeResolveUrlPayload("NO_SOURCE_FOR_URL", message = "Install the matching catalog extension first")
 
         val (sourceId, http, base) = matching
         val manga =
@@ -219,7 +219,7 @@ class BridgeMutation {
                 title = ""
             }
         val resolved = bridgeSourceCall { http.getMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = false).manga }
-        ResolveUrlPayload("FOUND", bridgeManga(sourceId, http, resolved))
+        BridgeResolveUrlPayload("FOUND", bridgeManga(sourceId, http, resolved))
     }
 
     private suspend fun source(sourceId: Long): CatalogueSource = GetSource.getSourceOrNull(sourceId) ?: error("Source is not installed")
@@ -229,7 +229,7 @@ class BridgeMutation {
 
     private fun mangaInput(
         http: HttpSource,
-        input: MangaInput,
+        input: BridgeMangaInput,
     ): SManga {
         require(input.url.length in 1..4096) { "URL is missing or too long" }
         val relative = sourceRelativeUrl(http, input.url)
@@ -247,10 +247,10 @@ class BridgeMutation {
         sourceId: Long,
         http: HttpSource,
         manga: SManga,
-    ): BridgeManga {
+    ): BridgeMangaResult {
         val realUrl = http.getMangaUrl(manga)
         val thumbnail = manga.thumbnail_url?.let { absoluteUrl(http, it) }?.let { BridgeMediaToken.issue(sourceId, it, it, 0) }
-        return BridgeManga(
+        return BridgeMangaResult(
             id = 0, // Compatibility field only; bridge identity is sourceId + canonical URL.
             sourceId = sourceId.toString(),
             url = manga.url,
@@ -276,7 +276,7 @@ class BridgeMutation {
         http: HttpSource,
         index: Int,
         chapter: SChapter,
-    ) = BridgeChapter(
+    ) = BridgeChapterResult(
         id = index,
         url = chapter.url,
         realUrl = http.getChapterUrl(chapter),
