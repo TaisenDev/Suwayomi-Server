@@ -79,7 +79,8 @@ class NetworkHelper(
     private val cloudflareDns: Dns by lazy {
         val bootstrapClient = OkHttpClient.Builder().build()
         val doh =
-            DnsOverHttps.Builder()
+            DnsOverHttps
+                .Builder()
                 .client(bootstrapClient)
                 .url("https://cloudflare-dns.com/dns-query".toHttpUrl())
                 .bootstrapDnsHosts(
@@ -104,8 +105,7 @@ class NetworkHelper(
                     .Builder()
                     .also {
                         if (cloudflareDohEnabled) it.dns(cloudflareDns)
-                    }
-                    .cookieJar(PersistentCookieJar(cookieStore))
+                    }.cookieJar(PersistentCookieJar(cookieStore))
                     .connectTimeout(30, TimeUnit.SECONDS)
                     .readTimeout(30, TimeUnit.SECONDS)
                     .callTimeout(2, TimeUnit.MINUTES)

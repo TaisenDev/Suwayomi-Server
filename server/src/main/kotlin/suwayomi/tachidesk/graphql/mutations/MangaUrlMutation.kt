@@ -9,7 +9,9 @@
 package suwayomi.tachidesk.graphql.mutations
 
 import graphql.execution.DataFetcherResult
+import com.expediagroup.graphql.generator.annotations.GraphQLIgnore
 import io.github.oshai.kotlinlogging.KotlinLogging
+import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import suwayomi.tachidesk.graphql.directives.RequireAuth
@@ -49,7 +51,11 @@ class MangaUrlMutation {
     )
 
     @RequireAuth
-    fun addMangaFromUrl(input: AddMangaFromUrlInput): CompletableFuture<DataFetcherResult<AddMangaFromUrlPayload?>> {
+    fun addMangaFromUrl(
+        @GraphQLIgnore
+        userId: Int,
+        input: AddMangaFromUrlInput,
+    ): CompletableFuture<DataFetcherResult<AddMangaFromUrlPayload?>> {
         val effectiveAutoInstall = input.autoInstallExtension ?: false
         val effectiveAddToLibrary = input.addToLibrary ?: true
         val effectiveCategoryIds = input.categoryIds.orEmpty()
@@ -58,6 +64,7 @@ class MangaUrlMutation {
             val result =
                 runCatching {
                     MangaUrlResolver.resolveUrl(
+                        userId = userId,
                         url = input.url,
                         autoInstallExtension = effectiveAutoInstall,
                         addToLibrary = effectiveAddToLibrary,
@@ -72,7 +79,7 @@ class MangaUrlMutation {
                 }
 
             if (result.manga != null && effectiveAddToLibrary && effectiveCategoryIds.isNotEmpty()) {
-                CategoryManga.addMangasToCategories(listOf(result.manga.id), effectiveCategoryIds)
+                CategoryManga.addMangasToCategories(userId, listOf(result.manga.id), effectiveCategoryIds)
             }
 
             val mangaType =

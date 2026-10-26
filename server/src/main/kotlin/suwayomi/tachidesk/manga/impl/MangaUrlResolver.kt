@@ -11,6 +11,7 @@ package suwayomi.tachidesk.manga.impl
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.SManga
 import io.github.oshai.kotlinlogging.KotlinLogging
+import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import suwayomi.tachidesk.manga.impl.MangaList.insertOrUpdate
@@ -72,7 +73,7 @@ object MangaUrlResolver {
         return base.isEmpty() || urlPath == base || urlPath.startsWith("$base/")
     }
 
-    private fun findInstalledSource(uri: URI): SourceMatch? =
+    private suspend fun findInstalledSource(uri: URI): SourceMatch? =
         Source
             .getSourceList()
             .mapNotNull { source ->
@@ -83,8 +84,12 @@ object MangaUrlResolver {
                 if (!matchesBasePath(uri.rawPath.orEmpty(), baseUrl.rawPath.orEmpty())) return@mapNotNull null
                 SourceMatch(source.id.toLong(), baseUrl)
             }.sortedWith(
-                compareByDescending<SourceMatch> { it.baseUrl.rawPath.orEmpty().trimEnd('/').length }
-                    .thenBy { it.id },
+                compareByDescending<SourceMatch> {
+                    it.baseUrl.rawPath
+                        .orEmpty()
+                        .trimEnd('/')
+                        .length
+                }.thenBy { it.id },
             ).firstOrNull()
 
     private suspend fun findOnlineExtensionForHost(host: String): ExtensionInfo? {
@@ -111,14 +116,16 @@ object MangaUrlResolver {
 
     /** Resolves a public manga URL using an installed source and optionally adds it to the library. */
     suspend fun resolveUrl(
+        userId: Int,
         url: String,
         autoInstallExtension: Boolean = false,
         addToLibrary: Boolean = true,
     ): Result {
-        val uri = parseHttpUri(url) ?: return Result(
-            Status.INVALID_URL,
-            message = "A valid HTTP or HTTPS URL is required.",
-        )
+        val uri =
+            parseHttpUri(url) ?: return Result(
+                Status.INVALID_URL,
+                message = "A valid HTTP or HTTPS URL is required.",
+            )
         val host = normalizedHost(uri)
 
         var match = findInstalledSource(uri)
@@ -175,7 +182,7 @@ object MangaUrlResolver {
             )
         }
 
-        if (addToLibrary) Library.addMangaToLibrary(mangaId)
+        if (addToLibrary) Library.addMangaToLibrary(userId, mangaId)
 
         val mangaData =
             transaction {
