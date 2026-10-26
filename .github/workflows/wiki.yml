@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   wiki:
+    if: github.repository == 'Suwayomi/Suwayomi-Server'
     name: Publish to GitHub Wiki
     runs-on: ubuntu-latest
     steps:
