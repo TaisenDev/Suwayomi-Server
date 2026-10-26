@@ -48,7 +48,11 @@ class NetworkHelper(
 
     init {
         // Remove legacy on-disk source cookies once; future cookies remain process-local.
-        context.getSharedPreferences("cookie_store", Context.MODE_PRIVATE).edit().clear().apply()
+        context
+            .getSharedPreferences("cookie_store", Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .apply()
         clearLegacyNetworkCaches()
         CookieHandler.setDefault(
             CookieManager(cookieStore, CookiePolicy.ACCEPT_ALL),
@@ -137,7 +141,8 @@ class NetworkHelper(
 
     private fun clearLegacyNetworkCaches() {
         val tempDirectory = File(System.getProperty("java.io.tmpdir"))
-        tempDirectory.listFiles { file -> file.isDirectory && file.name.startsWith("tachidesk_network_cache") }
+        tempDirectory
+            .listFiles { file -> file.isDirectory && file.name.startsWith("tachidesk_network_cache") }
             ?.forEach { directory -> runCatching { directory.deleteRecursively() } }
     }
 

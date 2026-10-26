@@ -1,8 +1,6 @@
 package suwayomi.tachidesk.graphql.mutations
 
 import com.expediagroup.graphql.generator.annotations.GraphQLIgnore
-import eu.kanade.tachiyomi.source.Source as CatalogueSource
-import eu.kanade.tachiyomi.source.model.Page as SourcePage
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
@@ -10,16 +8,18 @@ import kotlinx.coroutines.CancellationException
 import suwayomi.tachidesk.graphql.directives.RequireAuth
 import suwayomi.tachidesk.graphql.types.FilterChange
 import suwayomi.tachidesk.graphql.types.updateFilterList
-import suwayomi.tachidesk.server.JavalinSetup.future
 import suwayomi.tachidesk.manga.impl.MangaUrlResolver
-import suwayomi.tachidesk.manga.impl.Source as SourceRegistry
 import suwayomi.tachidesk.manga.impl.util.source.GetSource
+import suwayomi.tachidesk.server.JavalinSetup.future
 import java.net.URI
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
+import eu.kanade.tachiyomi.source.Source as CatalogueSource
+import eu.kanade.tachiyomi.source.model.Page as SourcePage
+import suwayomi.tachidesk.manga.impl.Source as SourceRegistry
 
 private suspend fun <T> bridgeSourceCall(block: suspend () -> T): T =
     try {
@@ -89,10 +89,25 @@ class BridgeMutation {
         val scanlator: String? = null,
     )
 
-    data class FetchSourcePayload(val mangas: List<BridgeManga>, val hasNextPage: Boolean)
-    data class FetchMangaPayload(val manga: BridgeManga, val chapters: List<BridgeChapter>)
-    data class ResolveUrlPayload(val status: String, val manga: BridgeManga? = null, val message: String? = null)
-    data class FetchPagesPayload(val pages: List<String>)
+    data class FetchSourcePayload(
+        val mangas: List<BridgeManga>,
+        val hasNextPage: Boolean,
+    )
+
+    data class FetchMangaPayload(
+        val manga: BridgeManga,
+        val chapters: List<BridgeChapter>,
+    )
+
+    data class ResolveUrlPayload(
+        val status: String,
+        val manga: BridgeManga? = null,
+        val message: String? = null,
+    )
+
+    data class FetchPagesPayload(
+        val pages: List<String>,
+    )
 
     @RequireAuth
     fun bridgeFetchSourceManga(
@@ -103,16 +118,23 @@ class BridgeMutation {
         require((input.query?.length ?: 0) <= 300) { "Search query is too long" }
         val source = httpSource(input.source)
         val filters = updateFilterList(source, input.filters)
-        val result = bridgeSourceCall {
-            when (input.type) {
-                ListingType.SEARCH -> source.getSearchManga(input.page, input.query.orEmpty(), filters)
-                ListingType.POPULAR -> source.getPopularManga(input.page)
-                ListingType.LATEST -> {
-                    require(source.supportsLatest) { "Source does not support latest updates" }
-                    source.getLatestUpdates(input.page)
+        val result =
+            bridgeSourceCall {
+                when (input.type) {
+                    ListingType.SEARCH -> {
+                        source.getSearchManga(input.page, input.query.orEmpty(), filters)
+                    }
+
+                    ListingType.POPULAR -> {
+                        source.getPopularManga(input.page)
+                    }
+
+                    ListingType.LATEST -> {
+                        require(source.supportsLatest) { "Source does not support latest updates" }
+                        source.getLatestUpdates(input.page)
+                    }
                 }
             }
-        }
         require(result.mangas.size <= MAX_MANGAS_PER_PAGE) { "Source returned too many results" }
         FetchSourcePayload(result.mangas.map { manga -> bridgeManga(input.source, source, manga) }, result.hasNextPage)
     }
@@ -124,9 +146,10 @@ class BridgeMutation {
     ) = future {
         val http = httpSource(input.source)
         val manga = mangaInput(http, input)
-        val update = bridgeSourceCall {
-            http.getMangaUpdate(manga, emptyList(), fetchDetails = input.fetchManga, fetchChapters = input.fetchChapters)
-        }
+        val update =
+            bridgeSourceCall {
+                http.getMangaUpdate(manga, emptyList(), fetchDetails = input.fetchManga, fetchChapters = input.fetchChapters)
+            }
         require(update.chapters.size <= MAX_CHAPTERS_PER_MANGA) { "Source returned too many chapters" }
         FetchMangaPayload(
             manga = bridgeManga(input.source, http, update.manga),
@@ -142,17 +165,20 @@ class BridgeMutation {
         val http = httpSource(input.source)
         // Validate both URLs against the installed source before passing their relative paths to it.
         sourceRelativeUrl(http, input.mangaUrl)
-        val chapter = SChapter.create().apply {
-            url = sourceRelativeUrl(http, input.chapterUrl)
-            name = input.chapterName.orEmpty()
-            chapter_number = input.chapterNumber ?: -1f
-            scanlator = input.scanlator
-        }
+        val chapter =
+            SChapter.create().apply {
+                url = sourceRelativeUrl(http, input.chapterUrl)
+                name = input.chapterName.orEmpty()
+                chapter_number = input.chapterNumber ?: -1f
+                scanlator = input.scanlator
+            }
         val pages = bridgeSourceCall { http.getPageList(chapter) }
         require(pages.size <= MAX_PAGES_PER_CHAPTER) { "Source returned too many pages" }
-        FetchPagesPayload(pages.mapIndexed { index, page ->
-            BridgeMediaToken.issue(input.source, absoluteUrl(http, page.url), page.imageUrl?.let { absoluteUrl(http, it) }, index)
-        })
+        FetchPagesPayload(
+            pages.mapIndexed { index, page ->
+                BridgeMediaToken.issue(input.source, absoluteUrl(http, page.url), page.imageUrl?.let { absoluteUrl(http, it) }, index)
+            },
+        )
     }
 
     /** Resolves a URL only through an already-installed source; it never auto-installs or adds a manga. */
@@ -162,33 +188,49 @@ class BridgeMutation {
         url: String,
     ) = future {
         require(url.length in 1..4096) { "URL is missing or too long" }
-        val uri = MangaUrlResolver.parseHttpUri(url)
-            ?: return@future ResolveUrlPayload("INVALID_URL", message = "A valid public HTTP or HTTPS URL is required")
-        val matching = SourceRegistry.getSourceList().mapNotNull { metadata ->
-            val id = metadata.id.toLongOrNull() ?: return@mapNotNull null
-            val http = GetSource.getSourceOrNull(id) as? HttpSource ?: return@mapNotNull null
-            val base = MangaUrlResolver.parseHttpUri(http.baseUrl) ?: return@mapNotNull null
-            if (!sameOrigin(uri, base) || !MangaUrlResolver.matchesBasePath(uri.rawPath.orEmpty(), base.rawPath.orEmpty())) return@mapNotNull null
-            Triple(id, http, base)
-        }.maxByOrNull { it.third.rawPath.orEmpty().trimEnd('/').length }
-            ?: return@future ResolveUrlPayload("NO_SOURCE_FOR_URL", message = "Install the matching catalog extension first")
+        val uri =
+            MangaUrlResolver.parseHttpUri(url)
+                ?: return@future ResolveUrlPayload("INVALID_URL", message = "A valid public HTTP or HTTPS URL is required")
+        val matching =
+            SourceRegistry
+                .getSourceList()
+                .mapNotNull { metadata ->
+                    val id = metadata.id.toLongOrNull() ?: return@mapNotNull null
+                    val http = GetSource.getSourceOrNull(id) as? HttpSource ?: return@mapNotNull null
+                    val base = MangaUrlResolver.parseHttpUri(http.baseUrl) ?: return@mapNotNull null
+                    if (!sameOrigin(uri, base) ||
+                        !MangaUrlResolver.matchesBasePath(uri.rawPath.orEmpty(), base.rawPath.orEmpty())
+                    ) {
+                        return@mapNotNull null
+                    }
+                    Triple(id, http, base)
+                }.maxByOrNull {
+                    it.third.rawPath
+                        .orEmpty()
+                        .trimEnd('/')
+                        .length
+                }
+                ?: return@future ResolveUrlPayload("NO_SOURCE_FOR_URL", message = "Install the matching catalog extension first")
 
         val (sourceId, http, base) = matching
-        val manga = SManga.create().apply {
-            this.url = MangaUrlResolver.relativePath(uri, base)
-            title = ""
-        }
+        val manga =
+            SManga.create().apply {
+                this.url = MangaUrlResolver.relativePath(uri, base)
+                title = ""
+            }
         val resolved = bridgeSourceCall { http.getMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = false).manga }
         ResolveUrlPayload("FOUND", bridgeManga(sourceId, http, resolved))
     }
 
-    private suspend fun source(sourceId: Long): CatalogueSource =
-        GetSource.getSourceOrNull(sourceId) ?: error("Source is not installed")
+    private suspend fun source(sourceId: Long): CatalogueSource = GetSource.getSourceOrNull(sourceId) ?: error("Source is not installed")
 
     private suspend fun httpSource(sourceId: Long): HttpSource =
         source(sourceId) as? HttpSource ?: error("Bridge supports online HTTP sources only")
 
-    private fun mangaInput(http: HttpSource, input: MangaInput): SManga {
+    private fun mangaInput(
+        http: HttpSource,
+        input: MangaInput,
+    ): SManga {
         require(input.url.length in 1..4096) { "URL is missing or too long" }
         val relative = sourceRelativeUrl(http, input.url)
         return SManga.create().apply {
@@ -201,7 +243,11 @@ class BridgeMutation {
         }
     }
 
-    private fun bridgeManga(sourceId: Long, http: HttpSource, manga: SManga): BridgeManga {
+    private fun bridgeManga(
+        sourceId: Long,
+        http: HttpSource,
+        manga: SManga,
+    ): BridgeManga {
         val realUrl = http.getMangaUrl(manga)
         val thumbnail = manga.thumbnail_url?.let { absoluteUrl(http, it) }?.let { BridgeMediaToken.issue(sourceId, it, it, 0) }
         return BridgeManga(
@@ -215,33 +261,41 @@ class BridgeMutation {
             artist = manga.artist,
             description = manga.description,
             genre = manga.getGenres().orEmpty(),
-            status = when (manga.status) {
-                SManga.ONGOING -> "ONGOING"
-                SManga.COMPLETED, SManga.PUBLISHING_FINISHED -> "COMPLETED"
-                SManga.ON_HIATUS -> "HIATUS"
-                SManga.CANCELLED -> "CANCELLED"
-                else -> "UNKNOWN"
-            },
+            status =
+                when (manga.status) {
+                    SManga.ONGOING -> "ONGOING"
+                    SManga.COMPLETED, SManga.PUBLISHING_FINISHED -> "COMPLETED"
+                    SManga.ON_HIATUS -> "HIATUS"
+                    SManga.CANCELLED -> "CANCELLED"
+                    else -> "UNKNOWN"
+                },
         )
     }
 
-    private fun bridgeChapter(http: HttpSource, index: Int, chapter: SChapter) =
-        BridgeChapter(
-            id = index,
-            url = chapter.url,
-            realUrl = http.getChapterUrl(chapter),
-            name = chapter.name,
-            uploadDate = chapter.date_upload,
-            chapterNumber = chapter.chapter_number,
-            scanlator = chapter.scanlator,
-        )
+    private fun bridgeChapter(
+        http: HttpSource,
+        index: Int,
+        chapter: SChapter,
+    ) = BridgeChapter(
+        id = index,
+        url = chapter.url,
+        realUrl = http.getChapterUrl(chapter),
+        name = chapter.name,
+        uploadDate = chapter.date_upload,
+        chapterNumber = chapter.chapter_number,
+        scanlator = chapter.scanlator,
+    )
 
-    private fun sourceRelativeUrl(http: HttpSource, raw: String): String {
+    private fun sourceRelativeUrl(
+        http: HttpSource,
+        raw: String,
+    ): String {
         require(raw.length in 1..4096) { "URL is missing or too long" }
         val base = MangaUrlResolver.parseHttpUri(http.baseUrl) ?: error("Installed source has an invalid base URL")
         val parsed = MangaUrlResolver.parseHttpUri(raw)
-        val target = parsed ?: runCatching { base.resolve(URI(raw)).normalize() }.getOrNull()
-            ?: error("Invalid source URL")
+        val target =
+            parsed ?: runCatching { base.resolve(URI(raw)).normalize() }.getOrNull()
+                ?: error("Invalid source URL")
         require(sameOrigin(target, base)) { "URL does not belong to the selected source" }
         require(MangaUrlResolver.matchesBasePath(target.rawPath.orEmpty(), base.rawPath.orEmpty())) {
             "URL is outside the selected source path"
@@ -249,20 +303,27 @@ class BridgeMutation {
         return MangaUrlResolver.relativePath(target, base)
     }
 
-    private fun absoluteUrl(http: HttpSource, raw: String): String {
+    private fun absoluteUrl(
+        http: HttpSource,
+        raw: String,
+    ): String {
         val uri = URI(raw)
         val base = URI(http.baseUrl)
         return if (uri.isAbsolute) uri.toString() else base.resolve(uri).toString()
     }
 
-    private fun sameOrigin(a: URI, b: URI): Boolean =
+    private fun sameOrigin(
+        a: URI,
+        b: URI,
+    ): Boolean =
         a.scheme.equals(b.scheme, true) && a.host.equals(b.host, true) && effectivePort(a) == effectivePort(b) && a.rawUserInfo == null
 
-    private fun effectivePort(uri: URI): Int = when {
-        uri.port >= 0 -> uri.port
-        uri.scheme.equals("https", true) -> 443
-        else -> 80
-    }
+    private fun effectivePort(uri: URI): Int =
+        when {
+            uri.port >= 0 -> uri.port
+            uri.scheme.equals("https", true) -> 443
+            else -> 80
+        }
 
     companion object {
         const val MAX_MANGAS_PER_PAGE = 100
@@ -280,10 +341,26 @@ object BridgeMediaToken {
     private const val TTL_SECONDS = 3600L
     private const val MAX_IMAGE_BYTES = 16 * 1024 * 1024
 
-    data class Image(val bytes: ByteArray, val contentType: String)
-    fun issue(sourceId: Long, pageUrl: String, imageUrl: String?, index: Int): String {
+    data class Image(
+        val bytes: ByteArray,
+        val contentType: String,
+    )
+
+    fun issue(
+        sourceId: Long,
+        pageUrl: String,
+        imageUrl: String?,
+        index: Int,
+    ): String {
         val expires = System.currentTimeMillis() / 1000 + TTL_SECONDS
-        val payload = listOf(sourceId.toString(), expires.toString(), index.toString(), enc(pageUrl), enc(imageUrl.orEmpty())).joinToString("\n")
+        val payload =
+            listOf(
+                sourceId.toString(),
+                expires.toString(),
+                index.toString(),
+                enc(pageUrl),
+                enc(imageUrl.orEmpty()),
+            ).joinToString("\n")
         val encoded = enc(payload)
         return "$encoded.${encoder.encodeToString(mac(payload.toByteArray(Charsets.UTF_8)))}"
     }
@@ -317,18 +394,19 @@ object BridgeMediaToken {
             if (!publicHttpUrl(it.request.url.toString())) return null
             val body = it.body ?: return null
             if (body.contentLength() > MAX_IMAGE_BYTES) return null
-            val bytes = body.byteStream().use { stream ->
-                val output = java.io.ByteArrayOutputStream()
-                val buffer = ByteArray(8192)
-                var total = 0
-                while (total <= MAX_IMAGE_BYTES) {
-                    val count = stream.read(buffer, 0, minOf(buffer.size, MAX_IMAGE_BYTES + 1 - total))
-                    if (count < 0) break
-                    output.write(buffer, 0, count)
-                    total += count
+            val bytes =
+                body.byteStream().use { stream ->
+                    val output = java.io.ByteArrayOutputStream()
+                    val buffer = ByteArray(8192)
+                    var total = 0
+                    while (total <= MAX_IMAGE_BYTES) {
+                        val count = stream.read(buffer, 0, minOf(buffer.size, MAX_IMAGE_BYTES + 1 - total))
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        total += count
+                    }
+                    output.toByteArray()
                 }
-                output.toByteArray()
-            }
             if (bytes.size > MAX_IMAGE_BYTES) return null
             val mediaType = body.contentType()?.toString()?.substringBefore(';') ?: "application/octet-stream"
             if (!mediaType.startsWith("image/")) return null
@@ -336,39 +414,45 @@ object BridgeMediaToken {
         }
     }
 
-    private fun publicHttpUrl(value: String): Boolean = runCatching {
-        val uri = URI(value)
-        val scheme = uri.scheme?.lowercase()
-        val host = uri.host?.lowercase()?.trimEnd('.')
-        if (scheme !in setOf("http", "https") || host.isNullOrBlank() || uri.rawUserInfo != null) return false
-        if (host == "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return false
-        val addresses = java.net.InetAddress.getAllByName(host)
-        addresses.isNotEmpty() && addresses.all { address ->
-            val bytes = address.address
-            val b0 = bytes.getOrNull(0)?.toInt()?.and(0xff) ?: 0
-            val b1 = bytes.getOrNull(1)?.toInt()?.and(0xff) ?: 0
-            val blockedV4 = bytes.size == 4 && (
-                b0 == 0 || b0 == 10 || b0 == 127 ||
-                    (b0 == 169 && b1 == 254) ||
-                    (b0 == 172 && (b1 and 0xf0) == 16) ||
-                    (b0 == 192 && b1 == 168) ||
-                    (b0 == 100 && (b1 and 0xc0) == 64) ||
-                    (b0 == 198 && b1 in 18..19)
-                )
-            val blockedV6 = bytes.size == 16 && (
-                (b0 and 0xfe) == 0xfc ||
-                    (b0 == 0xfe && (b1 and 0xc0) == 0x80)
-                )
-            !address.isAnyLocalAddress && !address.isLoopbackAddress && !address.isLinkLocalAddress &&
-                !address.isSiteLocalAddress && !address.isMulticastAddress && !blockedV4 && !blockedV6
-        }
-    }.getOrDefault(false)
+    private fun publicHttpUrl(value: String): Boolean =
+        runCatching {
+            val uri = URI(value)
+            val scheme = uri.scheme?.lowercase()
+            val host = uri.host?.lowercase()?.trimEnd('.')
+            if (scheme !in setOf("http", "https") || host.isNullOrBlank() || uri.rawUserInfo != null) return false
+            if (host == "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return false
+            val addresses = java.net.InetAddress.getAllByName(host)
+            addresses.isNotEmpty() &&
+                addresses.all { address ->
+                    val bytes = address.address
+                    val b0 = bytes.getOrNull(0)?.toInt()?.and(0xff) ?: 0
+                    val b1 = bytes.getOrNull(1)?.toInt()?.and(0xff) ?: 0
+                    val blockedV4 =
+                        bytes.size == 4 && (
+                            b0 == 0 || b0 == 10 || b0 == 127 ||
+                                (b0 == 169 && b1 == 254) ||
+                                (b0 == 172 && (b1 and 0xf0) == 16) ||
+                                (b0 == 192 && b1 == 168) ||
+                                (b0 == 100 && (b1 and 0xc0) == 64) ||
+                                (b0 == 198 && b1 in 18..19)
+                        )
+                    val blockedV6 =
+                        bytes.size == 16 && (
+                            (b0 and 0xfe) == 0xfc ||
+                                (b0 == 0xfe && (b1 and 0xc0) == 0x80)
+                        )
+                    !address.isAnyLocalAddress && !address.isLoopbackAddress && !address.isLinkLocalAddress &&
+                        !address.isSiteLocalAddress && !address.isMulticastAddress && !blockedV4 && !blockedV6
+                }
+        }.getOrDefault(false)
 
-    private fun mac(bytes: ByteArray): ByteArray = Mac.getInstance("HmacSHA256").run {
-        init(SecretKeySpec(signingKey, "HmacSHA256"))
-        doFinal(bytes)
-    }
+    private fun mac(bytes: ByteArray): ByteArray =
+        Mac.getInstance("HmacSHA256").run {
+            init(SecretKeySpec(signingKey, "HmacSHA256"))
+            doFinal(bytes)
+        }
 
     private fun enc(value: String): String = encoder.encodeToString(value.toByteArray(Charsets.UTF_8))
+
     private fun dec(value: String): String? = runCatching { String(decoder.decode(value), Charsets.UTF_8) }.getOrNull()
 }
