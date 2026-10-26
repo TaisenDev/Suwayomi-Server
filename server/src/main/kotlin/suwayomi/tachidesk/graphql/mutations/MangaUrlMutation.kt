@@ -10,21 +10,12 @@ package suwayomi.tachidesk.graphql.mutations
 
 import com.expediagroup.graphql.generator.annotations.GraphQLIgnore
 import graphql.execution.DataFetcherResult
-import io.github.oshai.kotlinlogging.KotlinLogging
-import org.jetbrains.exposed.v1.core.eq
-import org.jetbrains.exposed.v1.jdbc.selectAll
-import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import suwayomi.tachidesk.graphql.directives.RequireAuth
 import suwayomi.tachidesk.graphql.types.MangaType
-import suwayomi.tachidesk.manga.impl.CategoryManga
-import suwayomi.tachidesk.manga.impl.MangaUrlResolver
-import suwayomi.tachidesk.manga.model.table.MangaTable
 import suwayomi.tachidesk.server.JavalinSetup.future
 import java.util.concurrent.CompletableFuture
 
 class MangaUrlMutation {
-    private val logger = KotlinLogging.logger {}
-
     enum class AddMangaFromUrlStatus {
         FOUND,
         EXTENSION_INSTALLED,
@@ -54,55 +45,18 @@ class MangaUrlMutation {
         @GraphQLIgnore
         userId: Int,
         input: AddMangaFromUrlInput,
-    ): CompletableFuture<DataFetcherResult<AddMangaFromUrlPayload?>> {
-        val effectiveAutoInstall = input.autoInstallExtension ?: false
-        val effectiveAddToLibrary = input.addToLibrary ?: true
-        val effectiveCategoryIds = input.categoryIds.orEmpty()
-
-        return future {
-            val result =
-                runCatching {
-                    MangaUrlResolver.resolveUrl(
-                        userId = userId,
-                        url = input.url,
-                        autoInstallExtension = effectiveAutoInstall,
-                        addToLibrary = effectiveAddToLibrary,
-                    )
-                }.onFailure { error ->
-                    logger.warn(error) { "Failed to add manga from URL" }
-                }.getOrElse {
-                    MangaUrlResolver.Result(
-                        status = MangaUrlResolver.Status.FETCH_FAILED,
-                        message = "The manga could not be loaded. Check the source and retry.",
-                    )
-                }
-
-            if (result.manga != null && effectiveAddToLibrary && effectiveCategoryIds.isNotEmpty()) {
-                CategoryManga.addMangasToCategories(userId, listOf(result.manga.id), effectiveCategoryIds)
-            }
-
-            val mangaType =
-                result.manga?.id?.let { id ->
-                    transaction {
-                        MangaTable
-                            .selectAll()
-                            .where { MangaTable.id eq id }
-                            .firstOrNull()
-                            ?.let { MangaType(it) }
-                    }
-                }
-
+    ): CompletableFuture<DataFetcherResult<AddMangaFromUrlPayload?>> =
+        future {
             DataFetcherResult
                 .newResult<AddMangaFromUrlPayload?>()
                 .data(
                     AddMangaFromUrlPayload(
                         clientMutationId = input.clientMutationId,
-                        status = AddMangaFromUrlStatus.valueOf(result.status.name),
-                        manga = mangaType,
-                        installedExtensionPkgName = result.installedExtensionPkgName,
-                        message = result.message,
+                        status = AddMangaFromUrlStatus.NO_SOURCE_FOR_URL,
+                        manga = null,
+                        installedExtensionPkgName = null,
+                        message = "Persistent manga import is disabled. Use bridgeResolveUrl for a transient lookup.",
                     ),
                 ).build()
         }
-    }
 }

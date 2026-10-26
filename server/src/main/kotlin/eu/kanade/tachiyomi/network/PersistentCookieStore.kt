@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.network
 
-import android.content.Context
 import okhttp3.Cookie
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -12,53 +11,17 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
-// from TachiWeb-Server
-class PersistentCookieStore(
-    context: Context,
-) : CookieStore {
+/** Source cookies are kept in memory for the lifetime of the Suwayomi process only. */
+class RuntimeCookieStore : CookieStore {
     private val cookieMap = mutableMapOf<String, List<Cookie>>()
-    private val prefs = context.getSharedPreferences("cookie_store", Context.MODE_PRIVATE)
 
     private val lock = ReentrantLock()
-
-    init {
-        lock.withLock {
-            val domains =
-                prefs.all.keys
-                    .map { it.substringBeforeLast(".") }
-                    .toSet()
-            val domainsToSave = mutableSetOf<String>()
-            domains.forEach { domain ->
-                val cookies = prefs.getStringSet(domain, emptySet())
-                if (!cookies.isNullOrEmpty()) {
-                    try {
-                        val url = "http://$domain".toHttpUrlOrNull() ?: return@forEach
-                        val nonExpiredCookies =
-                            cookies
-                                .mapNotNull { Cookie.parse(url, it) }
-                                .filter { !it.hasExpired() }
-                                .groupBy { it.domain }
-                                .mapValues { it.value.distinctBy { it.name } }
-                        nonExpiredCookies.forEach { (domain, cookies) ->
-                            cookieMap[domain] = cookies
-                            domainsToSave.add(domain)
-                        }
-                        domainsToSave.add(domain)
-                    } catch (_: Exception) {
-                        // Ignore
-                    }
-                }
-            }
-            saveToDisk(domainsToSave)
-        }
-    }
 
     fun addAll(
         url: HttpUrl,
         cookies: List<Cookie>,
     ) {
         lock.withLock {
-            val domainsToSave = mutableSetOf<String>()
             // Append or replace the cookies for this domain.
             for (cookie in cookies) {
                 val cookiesForDomain = cookieMap[cookie.domain].orEmpty().toMutableList()
@@ -70,17 +33,13 @@ class PersistentCookieStore(
                     cookiesForDomain[pos] = cookie
                 }
                 cookieMap[cookie.domain] = cookiesForDomain
-                domainsToSave.add(cookie.domain)
             }
-
-            saveToDisk(domainsToSave.toSet())
         }
     }
 
     override fun removeAll(): Boolean =
         lock.withLock {
-            val wasNotEmpty = cookieMap.isEmpty()
-            prefs.edit().clear().apply()
+            val wasNotEmpty = cookieMap.isNotEmpty()
             cookieMap.clear()
             wasNotEmpty
         }
@@ -88,7 +47,6 @@ class PersistentCookieStore(
     fun remove(uri: URI) {
         val url = uri.toURL()
         lock.withLock {
-            prefs.edit().remove(url.host).apply()
             cookieMap.remove(url.host)
         }
     }
@@ -104,8 +62,9 @@ class PersistentCookieStore(
         lock.withLock {
             cookieMap.entries
                 .filter {
-                    url.host.endsWith(it.key)
+                    (url.host == it.key || url.host.endsWith(".${it.key}"))
                 }.flatMap { it.value }
+                .filterNot { it.hasExpired() }
         }
 
     override fun add(
@@ -123,7 +82,6 @@ class PersistentCookieStore(
                 cookiesForDomain[pos] = cookie
             }
             cookieMap[cookie.domain] = cookiesForDomain
-            saveToDisk(setOf(cookie.domain))
         }
     }
 
@@ -164,35 +122,11 @@ class PersistentCookieStore(
                 val newList = cookies.toMutableList()
                 newList.removeAt(index)
                 cookieMap[cookie.domain] = newList.toList()
-                saveToDisk(setOf(cookie.domain))
                 true
             } else {
                 false
             }
         }
-
-    private fun saveToDisk(domains: Set<String>) {
-        // Get cookies to be stored in disk
-        prefs
-            .edit()
-            .apply {
-                domains.forEach { domain ->
-                    val newValues =
-                        cookieMap[domain]
-                            .orEmpty()
-                            .asSequence()
-                            .filter { it.persistent && !it.hasExpired() }
-                            .map(Cookie::toString)
-                            .toSet()
-                    if (newValues.isNotEmpty()) {
-                        remove(domain)
-                        putStringSet(domain, newValues)
-                    } else {
-                        remove(domain)
-                    }
-                }
-            }.apply()
-    }
 
     private fun Cookie.hasExpired() = System.currentTimeMillis() >= expiresAt
 

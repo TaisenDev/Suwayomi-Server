@@ -19,19 +19,17 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
-import okhttp3.Cache
 import okhttp3.Dns
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.dnsoverhttps.DnsOverHttps
-import okhttp3.logging.HttpLoggingInterceptor
 import suwayomi.tachidesk.manga.impl.util.source.GetSource
+import java.io.File
 import java.net.CookieHandler
 import java.net.CookieManager
 import java.net.CookiePolicy
 import java.net.InetAddress
 import java.net.UnknownHostException
-import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 
 class NetworkHelper(
@@ -46,9 +44,12 @@ class NetworkHelper(
 //    private val cacheSize = 5L * 1024 * 1024 // 5 MiB
 
     // Tachidesk -->
-    val cookieStore = PersistentCookieStore(context)
+    val cookieStore = RuntimeCookieStore()
 
     init {
+        // Remove legacy on-disk source cookies once; future cookies remain process-local.
+        context.getSharedPreferences("cookie_store", Context.MODE_PRIVATE).edit().clear().apply()
+        clearLegacyNetworkCaches()
         CookieHandler.setDefault(
             CookieManager(cookieStore, CookiePolicy.ACCEPT_ALL),
         )
@@ -105,33 +106,12 @@ class NetworkHelper(
                     .Builder()
                     .also {
                         if (cloudflareDohEnabled) it.dns(cloudflareDns)
-                    }.cookieJar(PersistentCookieJar(cookieStore))
+                    }.cookieJar(RuntimeCookieJar(cookieStore))
                     .connectTimeout(30, TimeUnit.SECONDS)
                     .readTimeout(30, TimeUnit.SECONDS)
                     .callTimeout(2, TimeUnit.MINUTES)
-                    .cache(
-                        Cache(
-                            directory = Files.createTempDirectory("tachidesk_network_cache").toFile(),
-                            maxSize = 5L * 1024 * 1024, // 5 MiB
-                        ),
-                    ).addInterceptor(UncaughtExceptionInterceptor())
+                    .addInterceptor(UncaughtExceptionInterceptor())
                     .addInterceptor(UserAgentInterceptor(::defaultUserAgentProvider))
-
-            // if (preferences.verboseLogging().get()) {
-            val httpLoggingInterceptor =
-                HttpLoggingInterceptor(
-                    object : HttpLoggingInterceptor.Logger {
-                        val logger = KotlinLogging.logger { }
-
-                        override fun log(message: String) {
-                            logger.debug { message }
-                        }
-                    },
-                ).apply {
-                    level = HttpLoggingInterceptor.Level.BASIC
-                }
-            builder.addNetworkInterceptor(httpLoggingInterceptor)
-            // }
 
             builder.addInterceptor(
                 CloudflareInterceptor(setUserAgent = { userAgent.value = it }),
@@ -154,6 +134,12 @@ class NetworkHelper(
 
             return builder
         }
+
+    private fun clearLegacyNetworkCaches() {
+        val tempDirectory = File(System.getProperty("java.io.tmpdir"))
+        tempDirectory.listFiles { file -> file.isDirectory && file.name.startsWith("tachidesk_network_cache") }
+            ?.forEach { directory -> runCatching { directory.deleteRecursively() } }
+    }
 
 //    val client by lazy { baseClientBuilder.cache(Cache(cacheDir, cacheSize)).build() }
     val client by lazy { baseClientBuilder.build() }

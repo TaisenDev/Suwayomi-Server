@@ -16,6 +16,7 @@ import io.javalin.apibuilder.ApiBuilder.post
 import io.javalin.apibuilder.ApiBuilder.put
 import io.javalin.apibuilder.ApiBuilder.ws
 import suwayomi.tachidesk.manga.controller.BackupController
+import suwayomi.tachidesk.manga.controller.BridgeController
 import suwayomi.tachidesk.manga.controller.CategoryController
 import suwayomi.tachidesk.manga.controller.DownloadController
 import suwayomi.tachidesk.manga.controller.ExtensionController
@@ -53,6 +54,10 @@ object MangaAPI {
             get("{sourceId}/search", SourceController.searchSingle)
             post("{sourceId}/quick-search", SourceController.quickSearchSingle)
 //            get("all/search", SourceController.searchGlobal) // TODO
+        }
+
+        path("bridge") {
+            get("media/{token}", BridgeController.media)
         }
 
         path("manga") {
