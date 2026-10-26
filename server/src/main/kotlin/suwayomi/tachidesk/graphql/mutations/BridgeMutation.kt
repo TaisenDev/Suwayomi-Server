@@ -21,6 +21,16 @@ import java.util.Base64
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
+private suspend fun <T> bridgeSourceCall(block: suspend () -> T): T =
+    try {
+        block()
+    } catch (error: CancellationException) {
+        throw error
+    } catch (_: Exception) {
+        // Source exceptions can contain manga/chapter URLs; don't persist them in server logs.
+        throw IllegalStateException("Installed source request failed")
+    }
+
 /** Stateless bridge operations. These call installed Source objects directly and never insert manga,
  * chapter, page, library, history, or progress rows into Suwayomi's database. */
 class BridgeMutation {
@@ -93,7 +103,7 @@ class BridgeMutation {
         require((input.query?.length ?: 0) <= 300) { "Search query is too long" }
         val source = httpSource(input.source)
         val filters = updateFilterList(source, input.filters)
-        val result = sourceCall {
+        val result = bridgeSourceCall {
             when (input.type) {
                 ListingType.SEARCH -> source.getSearchManga(input.page, input.query.orEmpty(), filters)
                 ListingType.POPULAR -> source.getPopularManga(input.page)
@@ -114,7 +124,7 @@ class BridgeMutation {
     ) = future {
         val http = httpSource(input.source)
         val manga = mangaInput(http, input)
-        val update = sourceCall {
+        val update = bridgeSourceCall {
             http.getMangaUpdate(manga, emptyList(), fetchDetails = input.fetchManga, fetchChapters = input.fetchChapters)
         }
         require(update.chapters.size <= MAX_CHAPTERS_PER_MANGA) { "Source returned too many chapters" }
@@ -138,7 +148,7 @@ class BridgeMutation {
             chapter_number = input.chapterNumber ?: -1f
             scanlator = input.scanlator
         }
-        val pages = sourceCall { http.getPageList(chapter) }
+        val pages = bridgeSourceCall { http.getPageList(chapter) }
         require(pages.size <= MAX_PAGES_PER_CHAPTER) { "Source returned too many pages" }
         FetchPagesPayload(pages.mapIndexed { index, page ->
             BridgeMediaToken.issue(input.source, absoluteUrl(http, page.url), page.imageUrl?.let { absoluteUrl(http, it) }, index)
@@ -168,7 +178,7 @@ class BridgeMutation {
             this.url = MangaUrlResolver.relativePath(uri, base)
             title = ""
         }
-        val resolved = sourceCall { http.getMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = false).manga }
+        val resolved = bridgeSourceCall { http.getMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = false).manga }
         ResolveUrlPayload("FOUND", bridgeManga(sourceId, http, resolved))
     }
 
@@ -177,16 +187,6 @@ class BridgeMutation {
 
     private suspend fun httpSource(sourceId: Long): HttpSource =
         source(sourceId) as? HttpSource ?: error("Bridge supports online HTTP sources only")
-
-    private suspend fun <T> sourceCall(block: suspend () -> T): T =
-        try {
-            block()
-        } catch (error: CancellationException) {
-            throw error
-        } catch (_: Exception) {
-            // Source exceptions can contain manga/chapter URLs; don't persist them in server logs.
-            throw IllegalStateException("Installed source request failed")
-        }
 
     private fun mangaInput(http: HttpSource, input: MangaInput): SManga {
         require(input.url.length in 1..4096) { "URL is missing or too long" }
@@ -285,7 +285,7 @@ object BridgeMediaToken {
         val expires = System.currentTimeMillis() / 1000 + TTL_SECONDS
         val payload = listOf(sourceId.toString(), expires.toString(), index.toString(), enc(pageUrl), enc(imageUrl.orEmpty())).joinToString("\n")
         val encoded = enc(payload)
-        return "$encoded.${enc(mac(payload.toByteArray(Charsets.UTF_8)))}"
+        return "$encoded.${encoder.encodeToString(mac(payload.toByteArray(Charsets.UTF_8)))}"
     }
 
     suspend fun fetch(token: String): Image? {
@@ -308,16 +308,27 @@ object BridgeMediaToken {
         val source = GetSource.getSourceOrNull(sourceId) as? HttpSource ?: return null
         val page = SourcePage(index, pageUrl, imageUrl)
         if (imageUrl == null) {
-            imageUrl = sourceCall { source.getImageUrl(page) }
+            imageUrl = bridgeSourceCall { source.getImageUrl(page) }
             page.imageUrl = imageUrl
         }
         if (!publicHttpUrl(imageUrl ?: return null)) return null
-        val response = sourceCall { source.getImage(page) }
+        val response = bridgeSourceCall { source.getImage(page) }
         response.use {
             if (!publicHttpUrl(it.request.url.toString())) return null
             val body = it.body ?: return null
             if (body.contentLength() > MAX_IMAGE_BYTES) return null
-            val bytes = body.byteStream().use { stream -> stream.readNBytes(MAX_IMAGE_BYTES + 1) }
+            val bytes = body.byteStream().use { stream ->
+                val output = java.io.ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                var total = 0
+                while (total <= MAX_IMAGE_BYTES) {
+                    val count = stream.read(buffer, 0, minOf(buffer.size, MAX_IMAGE_BYTES + 1 - total))
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                    total += count
+                }
+                output.toByteArray()
+            }
             if (bytes.size > MAX_IMAGE_BYTES) return null
             val mediaType = body.contentType()?.toString()?.substringBefore(';') ?: "application/octet-stream"
             if (!mediaType.startsWith("image/")) return null
