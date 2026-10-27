@@ -61,7 +61,7 @@ class BridgeMutation {
         val mangaUrl: String,
         val chapterUrl: String,
         val chapterName: String? = null,
-        val chapterNumber: Float? = null,
+        val chapterNumber: Double? = null,
         val scanlator: String? = null,
     )
 
@@ -169,7 +169,7 @@ class BridgeMutation {
             SChapter.create().apply {
                 url = sourceRelativeUrl(http, input.chapterUrl)
                 name = input.chapterName.orEmpty()
-                chapter_number = input.chapterNumber ?: -1f
+                chapter_number = input.chapterNumber?.toFloat() ?: -1f
                 scanlator = input.scanlator
             }
         val pages = bridgeSourceCall { http.getPageList(chapter) }
