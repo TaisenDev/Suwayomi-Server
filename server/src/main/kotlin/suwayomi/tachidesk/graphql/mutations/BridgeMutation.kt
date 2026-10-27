@@ -152,7 +152,7 @@ class BridgeMutation {
             }
         require(update.chapters.size <= MAX_CHAPTERS_PER_MANGA) { "Source returned too many chapters" }
         BridgeFetchMangaPayload(
-            manga = bridgeManga(input.source, http, update.manga),
+            manga = bridgeManga(input.source, http, update.manga, manga.url),
             chapters = update.chapters.mapIndexed { index, chapter -> bridgeChapter(http, index, chapter) },
         )
     }
@@ -247,13 +247,24 @@ class BridgeMutation {
         sourceId: Long,
         http: HttpSource,
         manga: SManga,
+        fallbackUrl: String? = null,
     ): BridgeMangaResult {
-        val realUrl = http.getMangaUrl(manga)
+        val relativeUrl =
+            runCatching { manga.url }
+                .getOrNull()
+                ?.takeIf { it.isNotBlank() }
+                ?: fallbackUrl?.let { sourceRelativeUrl(http, it) }
+                ?: error("Source returned manga without a URL")
+        val realUrl =
+            runCatching { http.getMangaUrl(manga) }
+                .getOrNull()
+                ?.takeIf { it.isNotBlank() }
+                ?: absoluteUrl(http, relativeUrl)
         val thumbnail = manga.thumbnail_url?.let { absoluteUrl(http, it) }?.let { BridgeMediaToken.issue(sourceId, it, it, 0) }
         return BridgeMangaResult(
             id = 0, // Compatibility field only; bridge identity is sourceId + canonical URL.
             sourceId = sourceId.toString(),
-            url = manga.url,
+            url = relativeUrl,
             realUrl = realUrl,
             title = manga.title,
             thumbnailUrl = thumbnail,
