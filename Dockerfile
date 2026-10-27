@@ -27,4 +27,4 @@ EXPOSE 4567
 VOLUME ["/home/suwayomi/.local/share/Tachidesk"]
 
 ENTRYPOINT ["tini", "--"]
-CMD ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1280x800x24 -nolisten tcp", "java", "-Dsuwayomi.tachidesk.config.server.systemTrayEnabled=false", "-Dsuwayomi.tachidesk.config.server.initialOpenInBrowserEnabled=false", "-jar", "/home/suwayomi/server.jar"]
+CMD ["xvfb-run", "--auto-servernum", "--server-num=98", "--server-args=-screen 0 1280x800x24 -nolisten tcp", "java", "-Dsuwayomi.tachidesk.config.server.systemTrayEnabled=false", "-Dsuwayomi.tachidesk.config.server.initialOpenInBrowserEnabled=false", "-jar", "/home/suwayomi/server.jar"]
